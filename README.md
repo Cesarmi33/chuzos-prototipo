@@ -11,6 +11,10 @@ Esto es una **DEMO**. Los puestos, menús, pedidos y ubicaciones son datos ficti
 
 Hace falta Node.js 18 o superior. El demo web no instala dependencias npm. Leaflet y el mapa se cargan en el navegador desde unpkg y OpenStreetMap.
 
+Cada pedido lleva un código corto (`CHZ-482`). El comprador paga directo al puesto, con datos Nequi, Daviplata o llave Bre-B marcados DEMO, o en efectivo al recoger. Chuzos no mueve ese dinero. El puesto empieza a preparar cuando marca «Pago recibido»; en efectivo confirma al entregar. Un pedido para recoger lo cierra el puesto con «Entregado», sin PIN.
+
+El chat es de un solo pedido, solo entre comprador y puesto, en memoria, y queda de solo lectura al entregar o cancelar. El repartidor no lo ve. Nadie muestra el teléfono del otro. Los avisos de «Ya pagué», «Pago recibido», «No me llegó» y «Entregado» entran al chat y salen en vivo por SSE.
+
 ## Cómo probarlo en local
 
 ```bash

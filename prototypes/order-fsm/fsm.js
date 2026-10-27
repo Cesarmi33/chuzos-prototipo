@@ -11,6 +11,15 @@
  *  - requested → rejected | requested → cancelled refunds the fee. No refund after accepted.
  *  - Wallet store: opts.wallets (WalletStore) or the process default store
  *    (../wallet/wallet.js defaultWalletStore). Missing wallet = balance 0 = blocked.
+ *
+ * Pickup close (no PIN): ready_for_pickup → delivered is only for orders with
+ * delivery === false, and only the merchant may do it. Domicilio still ends
+ * with the courier (en_route_to_customer → delivered).
+ *
+ * Payment gate: if order.payment exists, preparing is allowed only after the
+ * merchant confirms (payment.status === "confirmed") or the buyer chose cash
+ * (payment.method === "cash"; the merchant confirms cash on delivery).
+ * Orders without a payment object keep the previous preparing edge.
  */
 const { defaultWalletStore } = require("../wallet/wallet");
 
@@ -37,7 +46,7 @@ const TRANSITIONS = Object.freeze({
   accepted: ["preparing", "cancelled"],
   rejected: [], // terminal
   preparing: ["ready_for_pickup", "cancelled"],
-  ready_for_pickup: ["courier_assigned", "cancelled"],
+  ready_for_pickup: ["courier_assigned", "delivered", "cancelled"],
   courier_assigned: ["en_route_to_merchant", "cancelled", "failed"],
   en_route_to_merchant: ["picked_up", "failed", "cancelled"],
   picked_up: ["en_route_to_customer", "failed"],
@@ -63,13 +72,22 @@ const ACTORS = Object.freeze({
   failed: ["courier", "admin", "system"],
 });
 
-function canTransition(from, to, actorRole = null) {
+function canTransition(from, to, actorRole = null, order = null) {
   if (!STATUSES.includes(from) || !STATUSES.includes(to)) {
     return { ok: false, reason: `unknown status: ${from} -> ${to}` };
   }
   const allowed = TRANSITIONS[from] || [];
   if (!allowed.includes(to)) {
     return { ok: false, reason: `illegal transition: ${from} -> ${to}` };
+  }
+  if (from === "ready_for_pickup" && to === "delivered") {
+    if (actorRole && actorRole !== "merchant") {
+      return { ok: false, reason: "solo el puesto marca Entregado en pedidos para recoger" };
+    }
+    if (order && order.delivery !== false) {
+      return { ok: false, reason: "el domicilio lo cierra el repartidor" };
+    }
+    return { ok: true };
   }
   if (actorRole) {
     const roles = ACTORS[to] || [];
@@ -81,10 +99,15 @@ function canTransition(from, to, actorRole = null) {
 }
 
 function transition(order, to, { actorRole, actorUserId, note, at, wallets } = {}) {
-  const check = canTransition(order.status, to, actorRole);
+  const check = canTransition(order.status, to, actorRole, order);
   if (!check.ok) {
     const err = new Error(check.reason);
     err.code = "ILLEGAL_TRANSITION";
+    throw err;
+  }
+  if (to === "preparing" && order.payment && order.payment.method !== "cash" && order.payment.status !== "confirmed") {
+    const err = new Error("el puesto confirma el pago antes de preparar");
+    err.code = "PAYMENT_REQUIRED";
     throw err;
   }
   // Prepaid wallet gate — after FSM/role checks, before any state change.
