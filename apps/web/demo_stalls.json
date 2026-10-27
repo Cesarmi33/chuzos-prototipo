@@ -1,0 +1,6 @@
+[
+ {"id":"demo_m1","name":"[DEMO] Arepas Doña Rosa","category":"Arepas","lat":4.6486,"lng":-74.0628,"address":"Cl. 57 con Cra. 13 (ubicación ficticia)","menu":[{"id":"a1","name":"Arepa de choclo con queso","price_cop":7000},{"id":"a2","name":"Arepa rellena de pollo","price_cop":9000}]},
+ {"id":"demo_m2","name":"[DEMO] Chuzos El Parche","category":"Chuzos","lat":4.6512,"lng":-74.0601,"address":"Cra. 9 con Cl. 60 (ubicación ficticia)","menu":[{"id":"c1","name":"Chuzo de res con papa","price_cop":12000},{"id":"c2","name":"Chuzo de pollo","price_cop":10000}]},
+ {"id":"demo_m3","name":"[DEMO] Empanadas La 63","category":"Empanadas","lat":4.6545,"lng":-74.0640,"address":"Cl. 63 con Cra. 11 (ubicación ficticia)","menu":[{"id":"e1","name":"Empanada de carne (x3)","price_cop":6000},{"id":"e2","name":"Avena fría","price_cop":4000}]},
+ {"id":"demo_m4","name":"[DEMO] Mazorcas y Salchipapas Lourdes","category":"Comidas rápidas","lat":4.6455,"lng":-74.0635,"address":"Plaza de Lourdes (ubicación ficticia)","menu":[{"id":"s1","name":"Salchipapa sencilla","price_cop":11000},{"id":"s2","name":"Mazorca desgranada","price_cop":13000}]}
+]

@@ -1,0 +1,26 @@
+const assert = require("assert"); const { createApp } = require("./server.js");
+(async () => {
+  const srv = createApp().listen(0); const base = `http://localhost:${srv.address().port}`;
+  const post = (p, b) => fetch(base + p, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b) }).then(async (r) => ({ s: r.status, j: await r.json() }));
+  let ok = 0; const t = (n, f) => { f(); ok++; console.log("  PASS", n); };
+  const stalls = await (await fetch(base + "/api/stalls")).json();
+  t("4 puestos demo marcados [DEMO]", () => { assert.equal(stalls.length, 4); stalls.forEach((s) => assert(s.name.startsWith("[DEMO]"))); });
+  t("billetera inicial 20 pedidos", () => assert.equal(stalls[0].wallet.orders_left, 20));
+  const { j: o } = await post("/api/orders", { stall_id: "demo_m2", items: [{ id: "c1", name: "x", qty: 2 }], delivery: true });
+  t("pedido requested, total 24000", () => { assert.equal(o.status, "requested"); assert.equal(o.total_cop, 24000); });
+  const w = (await (await fetch(base + "/api/stalls")).json()).find((s) => s.id === "demo_m2").wallet;
+  t("cobra COP 1.200 → 19 pedidos", () => { assert.equal(w.orders_left, 19); assert.equal(w.balance_cop, 22800); });
+  const bad = await post(`/api/orders/${o.id}/transition`, { to: "accepted", role: "customer" });
+  t("comprador no puede aceptar (400)", () => assert.equal(bad.s, 400));
+  let last;
+  for (const [to, role] of [["accepted","merchant"],["preparing","merchant"],["ready_for_pickup","merchant"],["courier_assigned","courier"],["en_route_to_merchant","courier"],["picked_up","courier"],["en_route_to_customer","courier"],["delivered","courier"]]) last = await post(`/api/orders/${o.id}/transition`, { to, role });
+  t("flujo completo hasta delivered", () => assert.equal(last.j.status, "delivered"));
+  const { j: o2 } = await post("/api/orders", { stall_id: "demo_m1", items: [{ id: "a1", qty: 1 }] });
+  await post(`/api/orders/${o2.id}/transition`, { to: "rejected", role: "merchant" });
+  const w1 = (await (await fetch(base + "/api/stalls")).json()).find((s) => s.id === "demo_m1").wallet;
+  t("rechazo reembolsa tarifa", () => assert.equal(w1.orders_left, 20));
+  for (let i = 0; i < 20; i++) await post("/api/orders", { stall_id: "demo_m3", items: [] });
+  const r21 = await post("/api/orders", { stall_id: "demo_m3", items: [] });
+  t("pedido 21 sin saldo → 402", () => { assert.equal(r21.s, 402); assert.equal(r21.j.code, "insufficient_wallet_balance"); });
+  console.log(`passed=${ok} failed=0`); srv.close();
+})().catch((e) => { console.error("FAIL", e); process.exit(1); });

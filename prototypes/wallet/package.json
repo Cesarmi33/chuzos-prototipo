@@ -1,0 +1,15 @@
+{
+  "name": "chuzos-prepaid-wallet",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Prepaid merchant wallet + welcome bonus (COP/MXN integer cents). JS in-memory store mirrors SQL; SQL smoke runs the real migration in PGlite (WASM Postgres, zero network at runtime, no Supabase).",
+  "scripts": {
+    "smoke": "node smoke_wallet.js",
+    "smoke:sql": "node smoke_sql_wallet.js"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.3.0",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1"
+  }
+}

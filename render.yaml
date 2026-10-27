@@ -1,0 +1,13 @@
+# The repo root is the service root on purpose. apps/web/server.js loads
+# prototypes/ and config/ via relative paths, and Render does not ship files
+# outside rootDir.
+services:
+  - type: web
+    name: chuzos-prototipo
+    runtime: node
+    plan: free
+    region: oregon
+    branch: main
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /
