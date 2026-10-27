@@ -1,0 +1,13 @@
+{
+  "welcome_bonus_free_orders": 20,
+  "currencies": {
+    "COP": {
+      "order_fee_cents": 120000,
+      "welcome_bonus_cents": 2400000
+    },
+    "MXN": {
+      "order_fee_cents": 500,
+      "welcome_bonus_cents": 10000
+    }
+  }
+}
