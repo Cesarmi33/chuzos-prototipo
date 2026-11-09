@@ -2,12 +2,15 @@
   "name": "chuzos-prototipo",
   "version": "0.1.0",
   "private": true,
-  "description": "Demo web de Chuzos. Node >= 18, sin dependencias.",
+  "description": "Demo web de Chuzos. Node >= 18. Única dependencia: pg (va incluida en node_modules/ porque el servicio de Render no corre npm install).",
   "scripts": {
     "start": "node apps/web/server.js",
-    "test": "node apps/web/test.js"
+    "test": "node apps/web/test.js && node apps/web/test_persist.js"
   },
   "engines": {
     "node": ">=18"
+  },
+  "dependencies": {
+    "pg": "^8.23.1"
   }
 }

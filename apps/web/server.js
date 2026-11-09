@@ -1,5 +1,6 @@
 // Chuzos prototipo web (demo). Sin dependencias: Node http + SSE. Reusa FSM y wallet de prototypes/.
-const http = require("http"), fs = require("fs"), path = require("path");
+const http = require("http"), fs = require("fs"), path = require("path"), crypto = require("crypto");
+const { openStore, memoryStore } = require("./store.js");
 const { transition, TRANSITIONS } = require("../../prototypes/order-fsm/fsm.js");
 const { WalletStore } = require("../../prototypes/wallet/wallet.js");
 const FEE = 120000;
@@ -8,6 +9,24 @@ const METHOD_LABEL = { nequi: "Nequi", daviplata: "Daviplata", breb: "Bre-B", ca
 const RECEIPT_RE = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/;
 const MAX_RECEIPT = 1400000;
 const MAX_BODY = 2000000;
+const LANDING_DIR = path.join(__dirname, "landing");
+const EMAIL_RE = /^[^\s@<>"',;]{1,64}@[^\s@<>"',;]{1,190}\.[a-z]{2,24}$/i;
+const ROLES = new Set(["buyer", "stall"]);
+const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".json": "application/json", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".mp4": "video/mp4", ".woff2": "font/woff2", ".pdf": "application/pdf", ".srt": "text/plain; charset=utf-8", ".webmanifest": "application/manifest+json", ".ico": "image/x-icon" };
+
+function keyOk(given) {
+  const want = process.env.ADMIN_KEY || "";
+  if (!want || typeof given !== "string") return false;
+  const a = crypto.createHash("sha256").update(given).digest();
+  const b = crypto.createHash("sha256").update(want).digest();
+  return crypto.timingSafeEqual(a, b);
+}
+
+function csvCell(v) {
+  let t = v == null ? "" : String(v);
+  if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; // evita fórmulas al abrir en Excel
+  return /[",\n\r]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+}
 
 function fail(status, message, code) {
   const err = new Error(message);
@@ -53,14 +72,35 @@ function chatClosed(order) {
   return order.status === "delivered" || order.status === "cancelled";
 }
 
-function createApp() {
+function createApp(opts = {}) {
+  const store = opts.store || memoryStore();
+  const initial = opts.initial || { orders: [], meta: null };
   const wallets = new WalletStore();
   const stalls = JSON.parse(fs.readFileSync(path.join(__dirname, "demo_stalls.json"), "utf8"));
-  stalls.forEach((s) => wallets.createMerchantWallet({ id: s.id, country_code: "CO" }));
   const orders = new Map();
   let seq = 0;
   const clients = new Set();
   const codes = new Set();
+  if (initial.meta) {
+    const m = initial.meta;
+    seq = m.seq || 0;
+    (m.codes || []).forEach((c) => codes.add(c));
+    (m.wallets || []).forEach(([id, w]) => wallets.wallets.set(id, w));
+    wallets.ledger = Array.isArray(m.ledger) ? m.ledger : [];
+  }
+  (initial.orders || []).forEach((o) => {
+    orders.set(o.id, o);
+    if (o.payment && o.payment.code) codes.add(o.payment.code);
+    const n = Number(String(o.id).replace(/^ord_/, ""));
+    if (n > seq) seq = n;
+  });
+  const seedWallets = () => stalls.forEach((s) => wallets.createMerchantWallet({ id: s.id, country_code: "CO" }));
+  seedWallets();
+  const meta = () => ({ seq, codes: [...codes], wallets: [...wallets.wallets.entries()], ledger: wallets.ledger });
+  let pending = Promise.resolve();
+  const persist = (o) => {
+    pending = store.saveOrder(o, meta()).catch((e) => console.error("no se pudo guardar", o && o.id, e.message));
+  };
   const broadcast = (o) => {
     const d = `data: ${JSON.stringify(o)}\n\n`;
     clients.forEach((c) => c.write(d));
@@ -76,6 +116,7 @@ function createApp() {
   };
   const save = (o) => {
     orders.set(o.id, o);
+    persist(o);
     broadcast({ type: "order", order: o });
     return o;
   };
@@ -198,13 +239,69 @@ function createApp() {
     if (body.role === "customer") o.unread_customer = 0;
     else o.unread_merchant = 0;
     orders.set(o.id, o);
+    persist(o);
     return o;
+  }
+
+  async function addSignup(body) {
+    if (body.website) return { ok: true }; // trampa anti-bots: campo oculto
+    const email = String(body.email || "").trim().toLowerCase();
+    if (email.length > 254 || !EMAIL_RE.test(email)) throw fail(400, "escribe un correo válido");
+    if (!ROLES.has(body.role)) throw fail(400, "elige si eres comprador o puesto");
+    const name = String(body.name || "").replace(/[\u0000-\u001f]/g, " ").trim().slice(0, 80) || null;
+    const lang = body.lang === "en" ? "en" : "es";
+    const source = String(body.source || "landing").slice(0, 40);
+    const r = await store.addSignup({ name, email, role: body.role, lang, source });
+    return { ok: true, created: r.created };
+  }
+
+  async function resetDemo() {
+    await pending;
+    orders.clear();
+    codes.clear();
+    seq = 0;
+    wallets.reset();
+    seedWallets();
+    await store.resetDemo();
+    pending = store.saveMeta(meta()).catch((e) => console.error("no se pudo guardar", e.message));
+    await pending;
+    broadcast({ type: "reset" });
+    return { ok: true };
   }
 
   const send = (res, code, body, type = "application/json") => {
     res.writeHead(code, { "Content-Type": type });
     res.end(type === "application/json" ? JSON.stringify(body) : body);
   };
+  const sendJson = async (res, code, body) => {
+    await pending; // responde cuando el cambio ya quedó guardado
+    send(res, code, body);
+  };
+
+  function serveLanding(req, res, p) {
+    const rel = decodeURIComponent(p.slice("/landing/".length)) || "index.html";
+    const f = path.resolve(LANDING_DIR, rel);
+    if (!f.startsWith(LANDING_DIR + path.sep) || !fs.existsSync(f) || !fs.statSync(f).isFile()) return send(res, 404, { error: "not found" });
+    const size = fs.statSync(f).size;
+    const headers = { "Content-Type": MIME[path.extname(f).toLowerCase()] || "application/octet-stream", "Accept-Ranges": "bytes", "Cache-Control": f.endsWith(".html") || f.endsWith(".js") ? "no-cache" : "public, max-age=86400" };
+    const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || "");
+    if (range && (range[1] || range[2])) {
+      let start = range[1] ? Number(range[1]) : size - Number(range[2]);
+      let end = range[1] && range[2] ? Number(range[2]) : size - 1;
+      if (start < 0) start = 0;
+      if (end >= size) end = size - 1;
+      if (start > end || start >= size) {
+        res.writeHead(416, { "Content-Range": `bytes */${size}` });
+        return res.end();
+      }
+      res.writeHead(206, { ...headers, "Content-Range": `bytes ${start}-${end}/${size}`, "Content-Length": end - start + 1 });
+      if (req.method === "HEAD") return res.end();
+      return fs.createReadStream(f, { start, end }).pipe(res);
+    }
+    res.writeHead(200, { ...headers, "Content-Length": size });
+    if (req.method === "HEAD") return res.end();
+    fs.createReadStream(f).pipe(res);
+  }
   const readBody = (req) => new Promise((resolve, reject) => {
     let d = "";
     let tooBig = false;
@@ -230,25 +327,41 @@ function createApp() {
     const url = new URL(req.url, "http://x");
     const p = url.pathname;
     try {
+      if (p === "/landing" || p === "/lista") { res.writeHead(301, { Location: "/landing/" + url.search }); return res.end(); }
+      if (p.startsWith("/landing/") && (req.method === "GET" || req.method === "HEAD")) return serveLanding(req, res, p);
+      if (p === "/healthz") return send(res, 200, { ok: true, storage: store.kind });
+      if (p === "/api/waitlist" && req.method === "POST") return send(res, 200, await addSignup(await readBody(req)));
+      if (p === "/api/admin/waitlist.csv" && req.method === "GET") {
+        if (!keyOk(url.searchParams.get("key"))) return send(res, 404, { error: "not found" });
+        const rows = await store.listSignups();
+        const head = ["id", "created_at", "name", "email", "role", "lang", "source"];
+        const csv = "\ufeff" + [head.join(","), ...rows.map((r) => head.map((h) => csvCell(r[h])).join(","))].join("\r\n") + "\r\n";
+        res.writeHead(200, { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": 'attachment; filename="chuzos_lista_espera.csv"', "Cache-Control": "no-store" });
+        return res.end(csv);
+      }
+      if (p === "/api/admin/reset-demo" && req.method === "POST") {
+        if (!keyOk(url.searchParams.get("key"))) return send(res, 404, { error: "not found" });
+        return send(res, 200, await resetDemo());
+      }
       if (p === "/api/stalls") return send(res, 200, stalls.map((s) => ({ ...s, wallet: walletView(s.id) })));
       if (p === "/api/orders" && req.method === "GET") return send(res, 200, [...orders.values()].reverse());
-      if (p === "/api/orders" && req.method === "POST") return send(res, 201, createOrder(await readBody(req)));
+      if (p === "/api/orders" && req.method === "POST") return sendJson(res, 201, createOrder(await readBody(req)));
       let m = p.match(/^\/api\/orders\/([\w]+)\/transition$/);
       if (m && req.method === "POST") {
         const b = await readBody(req);
-        return send(res, 200, move(m[1], b.to, b.role));
+        return sendJson(res, 200, move(m[1], b.to, b.role));
       }
       m = p.match(/^\/api\/orders\/([\w]+)\/payment$/);
       if (m && req.method === "POST") {
         const b = await readBody(req);
-        if (b.action === "confirm") return send(res, 200, confirmPayment(m[1], b));
-        if (b.action === "missing") return send(res, 200, missingPayment(m[1], b));
-        return send(res, 200, claimPayment(m[1], b));
+        if (b.action === "confirm") return sendJson(res, 200, confirmPayment(m[1], b));
+        if (b.action === "missing") return sendJson(res, 200, missingPayment(m[1], b));
+        return sendJson(res, 200, claimPayment(m[1], b));
       }
       m = p.match(/^\/api\/orders\/([\w]+)\/messages$/);
-      if (m && req.method === "POST") return send(res, 200, postMessage(m[1], await readBody(req)));
+      if (m && req.method === "POST") return sendJson(res, 200, postMessage(m[1], await readBody(req)));
       m = p.match(/^\/api\/orders\/([\w]+)\/read$/);
-      if (m && req.method === "POST") return send(res, 200, markRead(m[1], await readBody(req)));
+      if (m && req.method === "POST") return sendJson(res, 200, markRead(m[1], await readBody(req)));
       if (p === "/api/transitions") return send(res, 200, TRANSITIONS);
       if (p === "/api/events") {
         res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
@@ -268,8 +381,21 @@ function createApp() {
     }
   });
 }
-module.exports = { createApp };
-if (require.main === module) {
-  const port = process.env.PORT || 3000;
-  createApp().listen(port, "0.0.0.0", () => console.log(`Chuzos demo en http://localhost:${port}`));
+async function start(port = process.env.PORT || 3000) {
+  let store, initial;
+  for (let i = 1; ; i++) {
+    try {
+      store = await openStore();
+      initial = await store.load();
+      break;
+    } catch (e) {
+      console.error(`base de datos no disponible (intento ${i}):`, e.message);
+      if (i >= 5) { store = memoryStore(); initial = await store.load(); console.error("SIGO EN MEMORIA: los datos no se guardarán"); break; }
+      await new Promise((r) => setTimeout(r, 2000 * i));
+    }
+  }
+  console.log(`almacenamiento: ${store.kind}; pedidos cargados: ${initial.orders.length}`);
+  return createApp({ store, initial }).listen(port, "0.0.0.0", () => console.log(`Chuzos demo en http://localhost:${port}`));
 }
+module.exports = { createApp, start };
+if (require.main === module) start();

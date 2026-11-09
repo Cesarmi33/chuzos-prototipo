@@ -1,0 +1,52 @@
+// Prueba de persistencia: necesita TEST_DATABASE_URL (una base vacía de pruebas). Sin ella, se salta.
+const assert = require("assert");
+const url = process.env.TEST_DATABASE_URL;
+if (!url) { console.log("test_persist: sin TEST_DATABASE_URL, se salta"); process.exit(0); }
+process.env.DATABASE_URL = url;
+process.env.ADMIN_KEY = "test-key";
+const { start } = require("./server.js");
+
+(async () => {
+  const boot = async () => { const s = await start(0); await new Promise((r) => s.once("listening", r)); return s; };
+  let srv = await boot();
+  let base = `http://localhost:${srv.address().port}`;
+  const post = (p, b) => fetch(base + p, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b) }).then(async (r) => ({ s: r.status, j: await r.json() }));
+  let ok = 0;
+  const t = (n, f) => { f(); ok++; console.log("  PASS", n); };
+  const h = await (await fetch(base + "/healthz")).json();
+  t("usa postgres", () => assert.equal(h.storage, "postgres"));
+  await post("/api/admin/reset-demo?key=test-key", {});
+  const tag = Date.now().toString(36);
+  const { j: o } = await post("/api/orders", { stall_id: "demo_m2", items: [{ id: "c1", name: "x", qty: 1 }], delivery: false });
+  await post(`/api/orders/${o.id}/messages`, { role: "customer", text: "hola persistente" });
+  const w1 = await post("/api/waitlist", { email: `Prueba+${tag}@Example.com`, role: "buyer", name: "Demo" });
+  const w2 = await post("/api/waitlist", { email: `prueba+${tag}@example.com`, role: "buyer" });
+  const bad = await post("/api/waitlist", { email: "no-es-correo", role: "buyer" });
+  const badRole = await post("/api/waitlist", { email: "a@b.co", role: "admin" });
+  t("lista de espera valida y no duplica", () => { assert.equal(w1.j.created, true); assert.equal(w2.j.created, false); assert.equal(bad.s, 400); assert.equal(badRole.s, 400); });
+  srv.close();
+  srv = await boot();
+  base = `http://localhost:${srv.address().port}`;
+  const orders = await (await fetch(base + "/api/orders")).json();
+  const again = orders.find((x) => x.id === o.id);
+  t("pedido y chat sobreviven el reinicio", () => { assert.ok(again); assert.ok(again.messages.some((m) => m.text === "hola persistente")); assert.equal(again.payment.code, o.payment.code); });
+  const w = (await (await fetch(base + "/api/stalls")).json()).find((s) => s.id === "demo_m2").wallet;
+  t("billetera sobrevive (19 pedidos)", () => assert.equal(w.orders_left, 19));
+  const { j: o2 } = await post("/api/orders", { stall_id: "demo_m1", items: [] });
+  t("el contador sigue sin repetir id", () => assert.notEqual(o2.id, o.id));
+  const csvNo = await fetch(base + "/api/admin/waitlist.csv?key=mala");
+  const csv = await (await fetch(base + "/api/admin/waitlist.csv?key=test-key")).text();
+  t("CSV protegido con clave", () => { assert.equal(csvNo.status, 404); assert.ok(csv.includes(`prueba+${tag}@example.com,buyer`)); });
+  const rs = await post("/api/admin/reset-demo?key=test-key", {});
+  srv.close();
+  srv = await boot();
+  base = `http://localhost:${srv.address().port}`;
+  const after = await (await fetch(base + "/api/orders")).json();
+  const w3 = (await (await fetch(base + "/api/stalls")).json()).find((s) => s.id === "demo_m2").wallet;
+  t("reset demo borra pedidos y repone billeteras", () => { assert.equal(rs.j.ok, true); assert.equal(after.length, 0); assert.equal(w3.orders_left, 20); });
+  const csv2 = await (await fetch(base + "/api/admin/waitlist.csv?key=test-key")).text();
+  t("reset no borra la lista de espera", () => assert.ok(csv2.includes(`prueba+${tag}@example.com`)));
+  console.log(`persist passed=${ok} failed=0`);
+  srv.close();
+  process.exit(0);
+})().catch((e) => { console.error("FAIL", e); process.exit(1); });
